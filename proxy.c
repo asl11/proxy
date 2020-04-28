@@ -6,7 +6,7 @@
  * <Put your name(s) and NetID(s) here>
  */ 
 
-#include <assert.h>
+#include <string.h>
 
 #include "csapp.h"
 
@@ -17,25 +17,88 @@ static char    *create_log_entry(const struct sockaddr_in *sockaddr,
 static int	parse_uri(const char *uri, char **hostnamep, char **portp,
 		    char **pathnamep);
 
-/* 
+/*
  * Requires:
- *   <to be filled in by the student(s)> 
+ *   argv[1] is a string representing an unused TCP port number (in decimal).
  *
  * Effects:
- *   <to be filled in by the student(s)> 
+ *   Opens a listening socket on the specified TCP port number.  Runs forever
+ *   accepting client connections.  Echoes lines read from a connection until
+ *   the connection is closed by the client.  Only accepts a new connection
+ *   after the old connection is closed.
  */
 int
 main(int argc, char **argv)
 {
+	struct sockaddr_in clientaddr;
+	socklen_t clientlen;
+	int connfd;
+	int listenfd;
+	int port;
+	int serverfd;
+	char message[NI_MAXHOST];
 
-	/* Check the arguments. */
 	if (argc != 2) {
-		fprintf(stderr, "Usage: %s <port number>\n", argv[0]);
-		exit(0);
+		fprintf(stderr, "usage: %s <port>\n", argv[0]);
+		exit(1);
+	}
+	port = atoi(argv[1]);
+	listenfd = open_listenfd(port);
+	if (listenfd < 0)
+		unix_error("open_listen error");
+	while (1) {
+		clientlen = sizeof(clientaddr);
+
+		/*
+		 * Call Accept() to accept a pending connection request from
+		 * the client, and create a new file descriptor representing
+		 * the server's end of the connection.  Assign the new file
+		 * descriptor to connfd.
+		 */
+		if((connfd = Accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen)) < 0)
+      		unix_error("Unable to accept");
+
+		recv(connfd, message, MAXBUF, 0);
+
+		char get[100];
+	    char host_name[100];
+	    char type[100];
+
+		sscanf(message, "%s %s %s", get, host_name, type); 
+		
+		char *host = NULL;
+		char *port = NULL;
+		char *path = NULL;
+
+		parse_uri(host_name, host, port, path);
+		
+		// Opening port 80 unless specified otherwise.
+
+		if(port == NULL) {
+	        if((serverfd = open_clientfd(host, 80)) < 0)
+			    unix_error("Unable to connect to port 80");
+	    } else {
+	        int port_str;
+	        port++;
+	        port_str = atoi(port);
+	        if((serverfd = open_clientfd(host, port_str)) < 0)
+			    unix_error("Unable to connect to given port");
+    	}
+
+    	Rio_writen(serverfd, message, strlen(message));
+
+    	//receive reply
+
+	    while((n=rio_readn(serverfd, message, MAXLINE)) > 0 ) {
+	        Rio_writen(connfd, message, n);
+	        bzero(message, MAXLINE);
+	    }
+
+	    close(connfd);
+	    close(serverfd);
 	}
 
-	/* Return success. */
-	return (0);
+	return 0;
 }
 
 /*
