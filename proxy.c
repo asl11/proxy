@@ -7,6 +7,7 @@
  */ 
 
 #include <string.h>
+#include <assert.h>
 
 #include "csapp.h"
 
@@ -34,7 +35,7 @@ main(int argc, char **argv)
 	socklen_t clientlen;
 	int connfd;
 	int listenfd;
-	int port;
+	char* port;
 	int serverfd;
 	char message[NI_MAXHOST];
 
@@ -42,7 +43,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
 		exit(1);
 	}
-	port = atoi(argv[1]);
+	port = argv[1];
 	listenfd = open_listenfd(port);
 	if (listenfd < 0)
 		unix_error("open_listen error");
@@ -66,22 +67,23 @@ main(int argc, char **argv)
 
 		sscanf(message, "%s %s %s", get, host_name, type); 
 		
-		char *host = NULL;
-		char *port = NULL;
-		char *path = NULL;
+		char **host = NULL;
+		char **port = NULL;
+		char **path = NULL;
 
 		parse_uri(host_name, host, port, path);
 		
 		// Opening port 80 unless specified otherwise.
 
 		if(port == NULL) {
-	        if((serverfd = open_clientfd(host, 80)) < 0)
+	        if((serverfd = open_clientfd(*host, "80")) < 0)
 			    unix_error("Unable to connect to port 80");
 	    } else {
-	        int port_str;
+	        int port_str = -1;
 	        port++;
-	        port_str = atoi(port);
-	        if((serverfd = open_clientfd(host, port_str)) < 0)
+	        char str[100];
+	        sprintf(str, "%d", port_str);
+	        if((serverfd = open_clientfd(*host, str)) < 0)
 			    unix_error("Unable to connect to given port");
     	}
 
@@ -89,8 +91,10 @@ main(int argc, char **argv)
 
     	//receive reply
 
-	    while((n=rio_readn(serverfd, message, MAXLINE)) > 0 ) {
-	        Rio_writen(connfd, message, n);
+    	int i;
+
+	    while((i=rio_readn(serverfd, message, MAXLINE)) > 0 ) {
+	        Rio_writen(connfd, message, i);
 	        bzero(message, MAXLINE);
 	    }
 
