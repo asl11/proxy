@@ -13,7 +13,7 @@
 
 static void	client_error(int fd, const char *cause, int err_num, 
 		    const char *short_msg, const char *long_msg);
-static char    *create_log_entry(const struct sockaddr_in *sockaddr,
+static char *create_log_entry(const struct sockaddr_in *sockaddr,
 		    const char *uri, int size);
 static int	parse_uri(const char *uri, char **hostnamep, char **portp,
 		    char **pathnamep);
@@ -38,6 +38,7 @@ main(int argc, char **argv)
 	char* port;
 	int serverfd;
 	char message[NI_MAXHOST];
+	char** lines = Malloc(sizeof(char*) * 100);
 
 	if (argc != 2) {
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -45,6 +46,7 @@ main(int argc, char **argv)
 	}
 	port = argv[1];
 	listenfd = open_listenfd(port);
+
 	if (listenfd < 0)
 		unix_error("open_listen error");
 	while (1) {
@@ -59,20 +61,31 @@ main(int argc, char **argv)
 		if((connfd = Accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen)) < 0)
       		unix_error("Unable to accept");
 
-		recv(connfd, message, MAXBUF, 0);
+      	/* Initialize the rio fd */
+		rio_t client_riofd;
+		rio_readinitb(&client_riofd, connfd);
 
-		char get[100];
-	    char host_name[100];
-	    char type[100];
+	    int c = 0;
+	    char line[MAXBUF];
+	    while (strcmp(line, "\r\n") != 0) {
+	    	int ret_val = rio_readlineb(&client_riofd, line, MAXBUF);
+	    	lines[c] = Malloc(sizeof(char) * (ret_val + 1));
+			strcpy(lines[c], line);
+			c++;
+		}
+		lines = realloc(lines, sizeof(char *) * c);
+		char* head = strsep(&lines[0], " ");
+		char* uri = strsep(&lines[0], " ");
+		char* tail = strsep(&lines[0], " ");
 
-		sscanf(message, "%s %s %s", get, host_name, type); 
+		char** host = NULL;
+		char** port = NULL;
+		char** path = NULL;
+
+		parse_uri(uri, host, port, path);
 		
-		char **host = NULL;
-		char **port = NULL;
-		char **path = NULL;
-
-		parse_uri(host_name, host, port, path);
-		
+		printf("%p %p %p", host, port, path);
+		printf("%s %s %s", *host, *port, *path);
 		// Opening port 80 unless specified otherwise.
 
 		if(port == NULL) {
@@ -86,20 +99,35 @@ main(int argc, char **argv)
 	        if((serverfd = open_clientfd(*host, str)) < 0)
 			    unix_error("Unable to connect to given port");
     	}
+    	head = strcat(head, " ");
+    	tail = strcat(" ", tail);
+    	tail = strcat(tail, "\r\n\r\n");
 
-    	Rio_writen(serverfd, message, strlen(message));
+    	Rio_writen(serverfd, head, strlen(head));
+	    Rio_writen(serverfd, *path, strlen(*path));
+	    Rio_writen(serverfd, tail, strlen(tail));
 
     	//receive reply
 
     	int i;
 
-	    while((i=rio_readn(serverfd, message, MAXLINE)) > 0 ) {
+	    while((i = rio_readn(serverfd, line, MAXLINE)) > 0 ) {
 	        Rio_writen(connfd, message, i);
 	        bzero(message, MAXLINE);
 	    }
 
 	    close(connfd);
 	    close(serverfd);
+
+	    /*
+	    FILE *fptr = fopen("proxy.log", "ab+"); 
+	    if (fptr == NULL) 
+	    { 
+	        printf("Could not open file"); 
+	        return -1; 
+	    } 
+	    fprintf(fptr, create_log_entry((struct sockaddr *) &clientaddr, uri, SIZE));
+	    */
 	}
 
 	return 0;
