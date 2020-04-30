@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include <assert.h>
+#include <time.h>
 
 #include "csapp.h"
 
@@ -31,7 +32,7 @@ static int	parse_uri(const char *uri, char **hostnamep, char **portp,
 int
 main(int argc, char **argv)
 {
-	struct sockaddr_in clientaddr;
+	const struct sockaddr_in clientaddr;
 	socklen_t clientlen;
 	int connfd;
 	int listenfd;
@@ -45,6 +46,13 @@ main(int argc, char **argv)
 	}
 	port = argv[1];
 	listenfd = open_listenfd(port);
+
+	/* Open the proxy.log file */
+	FILE *fptr = fopen("proxy.log", "w"); 
+	if (fptr == NULL) { 
+        printf("Could not open file"); 
+        return -1; 
+    } 
 
 	if (listenfd < 0)
 		unix_error("open_listen error");
@@ -74,37 +82,42 @@ main(int argc, char **argv)
 		}
 		lines = realloc(lines, sizeof(char *) * c);
 
-		//char message[MAXBUF];
-		//rio_readnb(&client_riofd, message, MAXBUF);
+		int ret_val = strlen(lines[0]);
+		char* head = Malloc(ret_val + 1);
+		strcpy(head, strsep(&lines[0], " "));
 
-		char* head = strsep(&lines[0], " ");
-		char* uri = strsep(&lines[0], " ");
-		char* tail = strsep(&lines[0], " ");
+		char* uri = Malloc(ret_val + 1);
+		strcpy(uri, strsep(&lines[0], " "));
 
-		char* host[MAXLINE];
-		char* port[MAXLINE];
-		char* path[MAXLINE];
+		char* tail = Malloc(ret_val + 1);
+		strcpy(tail, strsep(&lines[0], " "));
 
-		parse_uri(uri, host, port, path);
+		ret_val = strlen(uri);
+		char* host = Malloc(ret_val + 1);
+		char* port = Malloc(ret_val + 1);
+		char* path = Malloc(ret_val + 1);
+
+		parse_uri(uri, &host, &port, &path);
 
 		// Opening port 80 unless specified otherwise.
 
 		if(port == NULL) {
-	        if((serverfd = open_clientfd(*host, "80")) < 0)
+	        if((serverfd = open_clientfd(host, "80")) < 0)
 			    unix_error("Unable to connect to port 80");
 	    } else {
-	        if((serverfd = open_clientfd(*host, *port)) < 0)
+	        if((serverfd = open_clientfd(host, port)) < 0)
 			    unix_error("Unable to connect to given port");
     	}
 
-    	printf("%s %s %s", head, uri, tail);
-
     	head = strcat(head, " ");
-    	*path = strcat(*path, " ");
+
+    	char* new_tail = Malloc(ret_val + 1);
+    	strcpy(new_tail, " ");
+    	new_tail = strcat(new_tail, tail);
 
     	rio_writen(serverfd, head, strlen(head));
-	    rio_writen(serverfd, *path, strlen(*path));
-	    rio_writen(serverfd, tail, strlen(tail));
+	    rio_writen(serverfd, path, strlen(path));
+	    rio_writen(serverfd, new_tail, strlen(new_tail));
 
     	//receive reply
 
@@ -116,24 +129,26 @@ main(int argc, char **argv)
 
     	char* buffer[MAXLINE];
 
+    	int sum = 0;
 	    while((i = rio_readn(serverfd, buffer, MAXLINE)) > 0 ) {
 	        rio_writen(connfd, buffer, i);
 	        bzero(buffer, MAXLINE);
+	        sum += i;
 	    }
+
+	    char* log = create_log_entry(&clientaddr, uri, sum);
+	    printf("%s", log);
+	    fprintf(fptr, "%s\n", log);
 
 	    close(connfd);
 	    close(serverfd);
-
-	    /*
-	    FILE *fptr = fopen("proxy.log", "ab+"); 
-	    if (fptr == NULL) 
-	    { 
-	        printf("Could not open file"); 
-	        return -1; 
-	    } 
-	    fprintf(fptr, create_log_entry((struct sockaddr *) &clientaddr, uri, SIZE));
-	    */
 	}
+
+	fflush(fptr);
+	if (fclose(fptr) != 0) { 
+        printf("Could not close file"); 
+        return -1; 
+    } 
 
 	return 0;
 }
