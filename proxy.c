@@ -37,7 +37,6 @@ main(int argc, char **argv)
 	int listenfd;
 	char* port;
 	int serverfd;
-	char message[NI_MAXHOST];
 	char** lines = Malloc(sizeof(char*) * 100);
 
 	if (argc != 2) {
@@ -74,46 +73,49 @@ main(int argc, char **argv)
 			c++;
 		}
 		lines = realloc(lines, sizeof(char *) * c);
+
+		//char message[MAXBUF];
+		//rio_readnb(&client_riofd, message, MAXBUF);
+
 		char* head = strsep(&lines[0], " ");
 		char* uri = strsep(&lines[0], " ");
 		char* tail = strsep(&lines[0], " ");
 
-		char** host = NULL;
-		char** port = NULL;
-		char** path = NULL;
+		char* host[MAXLINE];
+		char* port[MAXLINE];
+		char* path[MAXLINE];
 
 		parse_uri(uri, host, port, path);
-		
-		printf("%p %p %p", host, port, path);
-		printf("%s %s %s", *host, *port, *path);
+
 		// Opening port 80 unless specified otherwise.
 
 		if(port == NULL) {
 	        if((serverfd = open_clientfd(*host, "80")) < 0)
 			    unix_error("Unable to connect to port 80");
 	    } else {
-	        int port_str = -1;
-	        port++;
-	        char str[100];
-	        sprintf(str, "%d", port_str);
-	        if((serverfd = open_clientfd(*host, str)) < 0)
+	        if((serverfd = open_clientfd(*host, *port)) < 0)
 			    unix_error("Unable to connect to given port");
     	}
-    	head = strcat(head, " ");
-    	tail = strcat(" ", tail);
-    	tail = strcat(tail, "\r\n\r\n");
 
-    	Rio_writen(serverfd, head, strlen(head));
-	    Rio_writen(serverfd, *path, strlen(*path));
-	    Rio_writen(serverfd, tail, strlen(tail));
+    	printf("%s %s %s", head, uri, tail);
+
+    	head = strcat(head, " ");
+    	*path = strcat(*path, " ");
+    	tail = strcat(tail, "\r\n");
+
+    	rio_writen(serverfd, head, strlen(head));
+	    rio_writen(serverfd, *path, strlen(*path));
+	    rio_writen(serverfd, tail, strlen(tail));
 
     	//receive reply
 
     	int i;
 
-	    while((i = rio_readn(serverfd, line, MAXLINE)) > 0 ) {
-	        Rio_writen(connfd, message, i);
-	        bzero(message, MAXLINE);
+    	char* buffer[MAXLINE];
+
+	    while((i = rio_readn(serverfd, buffer, MAXLINE)) > 0 ) {
+	        rio_writen(connfd, buffer, i);
+	        bzero(buffer, MAXLINE);
 	    }
 
 	    close(connfd);
