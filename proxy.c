@@ -101,7 +101,6 @@ main(int argc, char **argv)
 
     	head = strcat(head, " ");
     	*path = strcat(*path, " ");
-    	tail = strcat(tail, "\r\n");
 
     	rio_writen(serverfd, head, strlen(head));
 	    rio_writen(serverfd, *path, strlen(*path));
@@ -110,6 +109,10 @@ main(int argc, char **argv)
     	//receive reply
 
     	int i;
+    	for (i = 1; i < c; i ++) {
+    		rio_writen(serverfd, lines[i], strlen(lines[i]));
+    	}
+    	rio_writen(serverfd, "\r\n", strlen("\r\n"));
 
     	char* buffer[MAXLINE];
 
