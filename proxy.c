@@ -138,7 +138,7 @@ main(int argc, char **argv)
 
 	    char* log = create_log_entry(&clientaddr, uri, sum);
 	    printf("%s", log);
-	    fprintf(fptr, "%s\n", log);
+	    fwrite(log, 1, sizeof(log), fptr);
 
 	    close(connfd);
 	    close(serverfd);
