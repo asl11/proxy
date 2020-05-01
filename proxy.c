@@ -6,21 +6,17 @@
  * <Put your name(s) and NetID(s) here>
  */ 
 
-#include <string.h>
 #include <assert.h>
 #include <time.h>
 #include <pthread.h>
+#include <string.h>
 
 #include "csapp.h"
 
-static void	client_error(int fd, const char *cause, int err_num, 
-		    const char *short_msg, const char *long_msg);
-static char *create_log_entry(const struct sockaddr_in *sockaddr,
-		    const char *uri, int size);
-static int	parse_uri(const char *uri, char **hostnamep, char **portp,
-		    char **pathnamep);
+#define SBUFSIZE 16 			/* How big we want the buffer */
+#define NUMTHREADS 4			/* How many threads we want */
 
-typedef struct {
+struct sbuf{
 	int* buffer; 				/* Buffer is an int array */
 	int n;  	 				/* Max num of items in buffer */
 	int front;   				/* buffer[front + 1 % n] is first item */
@@ -28,9 +24,25 @@ typedef struct {
 	pthread_mutex_t lock;   	/* mutex lock to protect info */
 	pthread_cond_t  notempty;   /* Conditional to check empty buffer */
 	pthread_cond_t  notfull;    /* Conditional to check full buffer */
-} sbuf;
+	int items;					/* Number of items in the buffer */
+	FILE *file; 				/* File Pointer for logging */
+};
 
-static bool verbose = true;
+static void	client_error(int fd, const char *cause, int err_num, 
+		    const char *short_msg, const char *long_msg);
+static char *create_log_entry(const struct sockaddr_in *sockaddr,
+		    const char *uri, int size);
+static int	parse_uri(const char *uri, char **hostnamep, char **portp,
+		    char **pathnamep);
+void *proxy_helper(void *vargp);
+void sbuf_init(struct sbuf *sp, int n, FILE *fptr);
+void sbuf_free(struct sbuf *sp);
+void sbuf_insert(struct sbuf *sp, int connfd);
+int  sbuf_remove(struct sbuf *sp);
+
+
+//static int verbose = 1;
+struct sbuf sbuf; /* Shared buffer of connected descriptors */
 
 /*
  * Requires:
@@ -46,13 +58,11 @@ int
 main(int argc, char **argv)
 {
 	const struct sockaddr_in clientaddr;
-	const int numthreads = 4;
 	socklen_t clientlen;
 	int connfd;
 	int listenfd;
 	char* port;
-	int serverfd;
-	char** lines = Malloc(sizeof(char*) * 100);
+	pthread_t tid;
 
 	if (argc != 2) {
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -70,6 +80,18 @@ main(int argc, char **argv)
 
 	if (listenfd < 0)
 		unix_error("open_listen error");
+
+	/* Initialize buffer and worker threads */
+	sbuf_init(&sbuf, SBUFSIZE, fptr);
+		for (int i = 0; i < NUMTHREADS; i++) {
+			Pthread_create(&tid, NULL, proxy_helper, NULL);
+		}
+
+	/* 
+	 * Main function begins accepting and passing connfd
+	 * to the shared buffer, so threads can remove 
+	 * in parallel */
+
 	while (1) {
 		clientlen = sizeof(clientaddr);
 
@@ -79,13 +101,59 @@ main(int argc, char **argv)
 		 * the server's end of the connection.  Assign the new file
 		 * descriptor to connfd.
 		 */
+
 		if((connfd = Accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen)) < 0)
       		unix_error("Unable to accept");
 
-      	/* Initialize the rio fd */
+      	sbuf_insert(&sbuf, connfd);
+
+	}
+
+	// This goes somewhere else
+	fflush(fptr);
+	sbuf_free(&sbuf);
+	if (fclose(fptr) != 0) { 
+        printf("Could not close file"); 
+        return -1; 
+    } 
+
+	return 0;
+}
+
+/*
+ * Requires: 
+ *   vargp is a NULL input, since we don't need anything from the main process
+ * 
+ * Effects:
+ *   This method is passed to Pthread_create, and carries out the main proxy task.
+ *	 Each thread created by main will wait until the shared buffer contains an item,
+ *   remove it, parse and pass the client info to the server, and display the server
+ *   response while logging the interaction. This method enables concurrent accepting
+ *   and servicing of client requests.
+ */
+void*
+proxy_helper(void *vargp) {
+	(void) vargp; // Otherwise won't compile.
+	Pthread_detach(pthread_self());
+	while (1) {
+
+		int connfd = sbuf_remove(&sbuf);
+
+		/* Get the client address */
+		const struct sockaddr_in clientaddr;
+		socklen_t clientlen = sizeof(clientaddr);
+		if (getpeername(connfd, (struct sockaddr *) &clientaddr, &clientlen) == -1)
+			unix_error("Unable to get client address");
+
+		char** lines = Malloc(sizeof(char*) * 100);
+		int serverfd;
+		FILE *fptr = sbuf.file;
+
+		/* Initialize the rio fd */
 		rio_t client_riofd;
 		rio_readinitb(&client_riofd, connfd);
 
+		/* Parse the client message */
 	    int c = 0;
 	    char line[MAXBUF];
 	    while (strcmp(line, "\r\n") != 0) {
@@ -96,6 +164,7 @@ main(int argc, char **argv)
 		}
 		lines = realloc(lines, sizeof(char *) * c);
 
+		/* Reformat input */
 		int ret_val = strlen(lines[0]);
 		char* head = Malloc(ret_val + 1);
 		strcpy(head, strsep(&lines[0], " "));
@@ -111,9 +180,10 @@ main(int argc, char **argv)
 		char* port = Malloc(ret_val + 1);
 		char* path = Malloc(ret_val + 1);
 
+		/* Pass input to parse_uri */
 		parse_uri(uri, &host, &port, &path);
 
-		// Opening port 80 unless specified otherwise.
+		/* Opening port 80 unless specified otherwise */
 
 		if(port == NULL) {
 	        if((serverfd = open_clientfd(host, "80")) < 0)
@@ -121,35 +191,36 @@ main(int argc, char **argv)
 	    } else {
 	        if((serverfd = open_clientfd(host, port)) < 0)
 			    unix_error("Unable to connect to given port");
-    	}
+		}
 
-    	head = strcat(head, " ");
+		/* Reformat message for server */
+		head = strcat(head, " ");
+		char* new_tail = Malloc(ret_val + 1);
+		strcpy(new_tail, " ");
+		new_tail = strcat(new_tail, tail);
 
-    	char* new_tail = Malloc(ret_val + 1);
-    	strcpy(new_tail, " ");
-    	new_tail = strcat(new_tail, tail);
-
-    	rio_writen(serverfd, head, strlen(head));
+		/* Pass message to server */
+		rio_writen(serverfd, head, strlen(head));
 	    rio_writen(serverfd, path, strlen(path));
 	    rio_writen(serverfd, new_tail, strlen(new_tail));
 
-    	//receive reply
+		/* Receive and parse reply */
+		int i;
+		for (i = 1; i < c; i ++) {
+			rio_writen(serverfd, lines[i], strlen(lines[i]));
+		}
+		rio_writen(serverfd, "\r\n", strlen("\r\n"));
 
-    	int i;
-    	for (i = 1; i < c; i ++) {
-    		rio_writen(serverfd, lines[i], strlen(lines[i]));
-    	}
-    	rio_writen(serverfd, "\r\n", strlen("\r\n"));
+		char* buffer[MAXLINE];
 
-    	char* buffer[MAXLINE];
-
-    	int sum = 0;
+		int sum = 0;
 	    while((i = rio_readn(serverfd, buffer, MAXLINE)) > 0 ) {
 	        rio_writen(connfd, buffer, i);
 	        bzero(buffer, MAXLINE);
 	        sum += i;
 	    }
 
+	    /* Log the transaction */
 	    char* log = create_log_entry(&clientaddr, uri, sum);
 	    printf("%s", log);
 	    fwrite(log, 1, sizeof(log), fptr);
@@ -157,58 +228,106 @@ main(int argc, char **argv)
 	    close(connfd);
 	    close(serverfd);
 	}
-
-	fflush(fptr);
-	if (fclose(fptr) != 0) { 
-        printf("Could not close file"); 
-        return -1; 
-    } 
-
-	return 0;
 }
 
+
+/* 
+ * The following methods are helper methods to enable
+ * shared buffer functionality. A shared buffer stores items 
+ * for concurrent threads to remove and service. The main
+ * process will add a connfd to the sbuffer after accepting,
+ * and the concurrent threads will carry out the rest. The functions
+ * are done atomically to ensure no dataraces.
+ */
+
+/* 
+ * Requires:
+ *   *sp is a pointer to the shared buffer. n is the number of
+ *   max items that will be stored in the buffer (how big the
+ *   buffer array will be initialized to). *filepointer is a
+ *   file pointer so that logging may be done by the threads
+ *   as well. 
+ * 
+ * Effects:
+ *   Initializes the shared buffer and its fields.
+ */
 void
-sbuf_init(struct sbuf *sp, int n) {
+sbuf_init(struct sbuf *sp, int n, FILE *filepointer) {
 	sp->buffer = malloc (sizeof(int) * n);
 	sp->n = n;
 	sp->front = sp->last = 0;
-	sp->used = 0;
-	sp->open = n;
+	sp->items = 0;
 	if (pthread_mutex_init(&(sp->lock), NULL) != 0) { 
         printf("\n mutex init has failed\n"); 
     } 
+    if (pthread_cond_init(&sp->notempty, NULL) != 0) {
+    	printf("\n cond init notempty has failed\n");
+    }
+    if (pthread_cond_init(&sp->notfull,NULL) != 0) {
+    	printf("\n cond init notfull has failed\n");
+    }
+    sp->file = filepointer;
 }
 
+/* Requires:
+ *   *sp is a pointer to the shared buffer.
+ * 
+ * Effects:
+ *   Frees the array malloced inside the buffer.
+ */
 void 
 sbuf_free(struct sbuf *sp) {
 	Free(sp->buffer);
 }
 
+/* Requires:
+ *   *sp is a pointer to the shared buffer. Connfd is the 
+ *   socket id we want to put in the buffer, so that threads
+ *   may remove it and service the request.
+ * 
+ * Effects:
+ *   Inserts connfd onto the buffer atomically, updates the number
+ *   of items in the buffer, and signals waiting threads.
+ */
 void
 sbuf_insert(struct sbuf *sp, int connfd) {
-	while(1) {
-		if(sp->open > 0) {
-			pthread_mutex_lock(&(sp->lock));
-			sp->buffer[(++sp->last)%(sp->n)] = connfd; //please work
-			pthread_mutex_unlock(&sp->lock);
-			break;
-		}
-		if (verbose) {
-			printf("Buffer is full, stuck in infinite loop");
-		}
+	pthread_mutex_lock(&sp->lock);
+	while(sp->items == sp->n) {
+		pthread_cond_wait(&sp->notfull, &sp->lock);
 	}
+	/* At this point, there is space in the buffer to insert */
+	sp->buffer[(++sp->last)%(sp->n)] = connfd;
+	sp->items++;
+
+	/* Signal threads waiting on the buffer for something to remove */
+	pthread_cond_signal(&sp->notempty);
+	pthread_mutex_unlock(&sp->lock);
 }
 
+/* Requires:
+ *   *sp is a pointer to the shared buffer.
+ * 
+ * Effects:
+ *   Removes a connfd from the buffer atomically, updates the 
+ *   number of items in the buffer, and signals waiting threads.
+ */
 int 
 sbuf_remove(struct sbuf *sp) {
-	int result;
-	while(1) {
-		if(sp->)
+	pthread_mutex_lock(&sp->lock);
+	while(sp->items == 0) {
+		pthread_cond_wait(&sp->notempty, &sp->lock);
 	}
+	/* At this point, there is something in the buffer to remove */
+	int connfd = sp->buffer[(++sp->front)%(sp->n)];
+	sp->items--;
 
+	/* Signal threads waiting to add something to the buffer */
+	pthread_cond_signal(&sp->notfull);
+	pthread_mutex_unlock(&sp->lock);
+	return connfd;
 }
 
-
+/* The following are given helper methods */
 
 /*
  * Requires:
