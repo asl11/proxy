@@ -21,13 +21,13 @@ static int	parse_uri(const char *uri, char **hostnamep, char **portp,
 		    char **pathnamep);
 
 typedef struct {
-	int* buffer; 			/* Buffer is an int array */
-	int n;  	 			/* Max num of items in buffer */
-	int front;   			/* buffer[front + 1 % n] is first item */
-	int last;    			/* buffer[last % n] is last item */
-	pthread_mutex_t lock;   /* mutex lock to protect info */
-	pthread_cond_t  open;   /* Conditional to check empty buffer */
-	pthread_cond_t  full;   /* Conditional to check full buffer */
+	int* buffer; 				/* Buffer is an int array */
+	int n;  	 				/* Max num of items in buffer */
+	int front;   				/* buffer[front + 1 % n] is first item */
+	int last;    				/* buffer[last % n] is last item */
+	pthread_mutex_t lock;   	/* mutex lock to protect info */
+	pthread_cond_t  notempty;   /* Conditional to check empty buffer */
+	pthread_cond_t  notfull;    /* Conditional to check full buffer */
 } sbuf;
 
 static bool verbose = true;
