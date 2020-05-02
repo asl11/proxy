@@ -32,7 +32,6 @@ static void	client_error(int fd, const char *cause, int err_num,
 		    const char *short_msg, const char *long_msg);
 static char *create_log_entry(const struct sockaddr_in *sockaddr,
 		    const char *uri, int size);
-static int	parse_uri(const char *uri, char **hostnamep, char **portp,
 		    char **pathnamep);
 void *proxy_helper(void *vargp);
 void sbuf_init(struct sbuf *sp, int n, FILE *fptr);
