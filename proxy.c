@@ -168,7 +168,12 @@ proxy_helper(void *vargp) {
 	    while (strcmp(line, "\r\n") != 0) {
 	    	int ret_val = rio_readlineb(&client_riofd, line, MAXBUF);
 	    	lines[c] = Malloc(sizeof(char) * (ret_val + 1));
-			strcpy(lines[c], line);
+	    	strcpy(lines[c], line);
+	    	while (line[ret_val - 1] != '\n') {
+	    		ret_val = rio_readlineb(&client_riofd, line, MAXBUF);
+	    		lines[c] = realloc(lines[c], sizeof(char) * (strlen(lines[c]) + ret_val + 1));
+	    		lines[c] = strcat(lines[c], line);
+	    	}
 			c++;
 		}
 		lines = realloc(lines, sizeof(char *) * c);
