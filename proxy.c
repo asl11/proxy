@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <time.h>
 #include <pthread.h>
+#include <signal.h>
 #include <string.h>
 
 #include "csapp.h"
@@ -25,16 +26,19 @@ struct sbuf{
 	pthread_cond_t  notempty;   /* Conditional to check empty buffer */
 	pthread_cond_t  notfull;    /* Conditional to check full buffer */
 	int items;					/* Number of items in the buffer */
-	FILE *file; 				/* File Pointer for logging */
 };
 
 static void	client_error(int fd, const char *cause, int err_num, 
 		    const char *short_msg, const char *long_msg);
 static char *create_log_entry(const struct sockaddr_in *sockaddr,
 		    const char *uri, int size);
+static int	parse_uri(const char *uri, char **hostnamep, char **portp,
 		    char **pathnamep);
+
 void *proxy_helper(void *vargp);
-void sbuf_init(struct sbuf *sp, int n, FILE *fptr);
+int syntax_handler(char* head, char* tail, int connfd);
+void handle_sigint(int sig);
+void sbuf_init(struct sbuf *sp, int n);
 void sbuf_free(struct sbuf *sp);
 void sbuf_insert(struct sbuf *sp, int connfd);
 int  sbuf_remove(struct sbuf *sp);
@@ -42,6 +46,7 @@ int  sbuf_remove(struct sbuf *sp);
 
 //static int verbose = 1;
 struct sbuf sbuf; /* Shared buffer of connected descriptors */
+FILE *fptr; 	  /* Shared access to log file */
 
 /*
  * Requires:
@@ -63,6 +68,8 @@ main(int argc, char **argv)
 	char* port;
 	pthread_t tid;
 
+	signal(SIGINT, handle_sigint);
+
 	if (argc != 2) {
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
 		exit(1);
@@ -71,7 +78,7 @@ main(int argc, char **argv)
 	listenfd = open_listenfd(port);
 
 	/* Open the proxy.log file */
-	FILE *fptr = fopen("proxy.log", "w"); 
+	fptr = fopen("proxy.log", "w"); 
 	if (fptr == NULL) { 
         printf("Could not open file"); 
         return -1; 
@@ -81,7 +88,7 @@ main(int argc, char **argv)
 		unix_error("open_listen error");
 
 	/* Initialize buffer and worker threads */
-	sbuf_init(&sbuf, SBUFSIZE, fptr);
+	sbuf_init(&sbuf, SBUFSIZE);
 		for (int i = 0; i < NUMTHREADS; i++) {
 			Pthread_create(&tid, NULL, proxy_helper, NULL);
 		}
@@ -101,20 +108,15 @@ main(int argc, char **argv)
 		 * descriptor to connfd.
 		 */
 
-		if((connfd = Accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen)) < 0)
-      		unix_error("Unable to accept");
+		if((connfd = Accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen)) < 0) {
+      		client_error(connfd, "Gateway Timeout", 504, "Gateway Timeout", 
+      			"Accept failed");
+      		close(connfd);
+		}
 
       	sbuf_insert(&sbuf, connfd);
 
 	}
-
-	// This goes somewhere else
-	fflush(fptr);
-	sbuf_free(&sbuf);
-	if (fclose(fptr) != 0) { 
-        printf("Could not close file"); 
-        return -1; 
-    } 
 
 	return 0;
 }
@@ -142,11 +144,12 @@ proxy_helper(void *vargp) {
 		const struct sockaddr_in clientaddr;
 		socklen_t clientlen = sizeof(clientaddr);
 		if (getpeername(connfd, (struct sockaddr *) &clientaddr, &clientlen) == -1)
-			unix_error("Unable to get client address");
+			client_error(connfd, "Internal Server Error",
+			    	500, "Internal Server Error",
+			    	"Failed on getpeername");
 
 		char** lines = Malloc(sizeof(char*) * 100);
 		int serverfd;
-		FILE *fptr = sbuf.file;
 
 		/* Initialize the rio fd */
 		rio_t client_riofd;
@@ -174,6 +177,15 @@ proxy_helper(void *vargp) {
 		char* tail = Malloc(ret_val + 1);
 		strcpy(tail, strsep(&lines[0], " "));
 
+		/* Check malformed requests */
+		if (syntax_handler(head,tail,connfd) == -1) {
+			/* 
+			 * There was an error, and we don't want to continue 
+			 * nor log this request 
+			 */
+			close(connfd);
+		}
+
 		ret_val = strlen(uri);
 		char* host = Malloc(ret_val + 1);
 		char* port = Malloc(ret_val + 1);
@@ -185,25 +197,34 @@ proxy_helper(void *vargp) {
 		/* Opening port 80 unless specified otherwise */
 
 		if(port == NULL) {
-	        if((serverfd = open_clientfd(host, "80")) < 0)
-			    unix_error("Unable to connect to port 80");
+	        if((serverfd = open_clientfd(host, "80")) < 0) {
+			    client_error(connfd, "Internal Server Error",
+			    	500, "Internal Server Error",
+			    	"Failed to connect to port 80");
+			    close(connfd);
+	        }
+
 	    } else {
-	        if((serverfd = open_clientfd(host, port)) < 0)
-			    unix_error("Unable to connect to given port");
+	        if((serverfd = open_clientfd(host, port)) < 0) {
+			    client_error(connfd, "Internal Server Error",
+			    	500, "Internal Server Error", 
+			    	"Failed to connect to given port");
+	        	close(connfd);
+	        }
 		}
 
-		/* Reformat message for server */
+		/* Reformat message for server. */
 		head = strcat(head, " ");
 		char* new_tail = Malloc(ret_val + 1);
 		strcpy(new_tail, " ");
 		new_tail = strcat(new_tail, tail);
 
-		/* Pass message to server */
+		/* Pass message to server. */
 		rio_writen(serverfd, head, strlen(head));
 	    rio_writen(serverfd, path, strlen(path));
 	    rio_writen(serverfd, new_tail, strlen(new_tail));
 
-		/* Receive and parse reply */
+	    /* Pass rest of message to server. */
 		int i;
 		for (i = 1; i < c; i ++) {
 			rio_writen(serverfd, lines[i], strlen(lines[i]));
@@ -212,6 +233,7 @@ proxy_helper(void *vargp) {
 
 		char* buffer[MAXLINE];
 
+		/* Receive and parse reply. */
 		int sum = 0;
 	    while((i = rio_readn(serverfd, buffer, MAXLINE)) > 0 ) {
 	        rio_writen(connfd, buffer, i);
@@ -221,14 +243,69 @@ proxy_helper(void *vargp) {
 
 	    /* Log the transaction */
 	    char* log = create_log_entry(&clientaddr, uri, sum);
-	    printf("%s", log);
-	    fwrite(log, 1, sizeof(log), fptr);
+	    fprintf(fptr, "%s", log);
 
 	    close(connfd);
 	    close(serverfd);
 	}
 }
 
+int 
+syntax_handler(char* head, char* tail, int connfd) {
+	/* This test is just so that we can check the last 3 digits of http. */
+	if (strlen(tail) <= 3) {
+		client_error(connfd, "Bad Request", 400, "Bad Request",
+			"Malformed Get Request");
+		return -1;
+	}
+	/* I'm dumb and can't figure out a better way to do this */
+	char *version = &tail[strlen(tail) - 5];
+
+    /* Checks http version. */
+	if (strcmp(version, "1.1\r\n") != 0 &&
+		strcmp(version, "1.0\r\n") != 0) {
+		client_error(connfd, "HTTP Version", 505, 
+			"HTTP Version Not Supported", 
+			"HTTP version not 1.1 or 1.0");
+		return -1;
+	}
+	/* Checks that request is a GET. */
+	if (strcmp(head, "GET") != 0) {
+		client_error(connfd, "Not Implemented", 501, 
+			"Not Implemented", "Only GET requests allowed");
+		return -1;
+	}
+	if (strcmp(tail, "HTTP/1.1\r\n") != 0 &&
+			strcmp(tail, "HTTP/1.0\r\n") != 0) {
+		client_error(connfd, "Bad Request", 400, 
+			"Bad Request", "Malformed Get Request");
+		return -1;
+	}
+
+	return 0;
+
+}
+
+/* 
+ * Requires: signal int, probably sigint
+ * 
+ * Effects: Closes the file on sigint, since otherwise the file
+ * won't close due to the infinite loop.
+ */
+void 
+handle_sigint(int sig) 
+{ 
+	(void) sig; /* Don't need this probably. */
+    /* Try to close the file */
+	fflush(fptr);
+	sbuf_free(&sbuf);
+	if (fclose(fptr) != 0) { 
+        printf("Could not close file"); 
+    } 
+
+    /* End the program */
+    exit(0);
+}
 
 /* 
  * The following methods are helper methods to enable
@@ -251,7 +328,7 @@ proxy_helper(void *vargp) {
  *   Initializes the shared buffer and its fields.
  */
 void
-sbuf_init(struct sbuf *sp, int n, FILE *filepointer) {
+sbuf_init(struct sbuf *sp, int n) {
 	sp->buffer = malloc (sizeof(int) * n);
 	sp->n = n;
 	sp->front = sp->last = 0;
@@ -265,7 +342,6 @@ sbuf_init(struct sbuf *sp, int n, FILE *filepointer) {
     if (pthread_cond_init(&sp->notfull,NULL) != 0) {
     	printf("\n cond init notfull has failed\n");
     }
-    sp->file = filepointer;
 }
 
 /* Requires:
