@@ -3,10 +3,11 @@
  *
  * This program implements a multithreaded HTTP proxy.
  *
- * <Put your name(s) and NetID(s) here>
+ * Alex Li asl11 Chris Lee chl4
  */ 
 
 #include <assert.h>
+#include <errno.h>
 #include <time.h>
 #include <pthread.h>
 #include <signal.h>
@@ -38,6 +39,7 @@ static int	parse_uri(const char *uri, char **hostnamep, char **portp,
 void *proxy_helper(void *vargp);
 int syntax_handler(char* head, char* tail, int connfd);
 void handle_sigint(int sig);
+void ignore_sigpipe(int sig);
 void sbuf_init(struct sbuf *sp, int n);
 void sbuf_free(struct sbuf *sp);
 void sbuf_insert(struct sbuf *sp, int connfd);
@@ -69,6 +71,7 @@ main(int argc, char **argv)
 	pthread_t tid;
 
 	signal(SIGINT, handle_sigint);
+	signal(SIGPIPE, ignore_sigpipe);
 
 	if (argc != 2) {
 		fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -143,10 +146,14 @@ proxy_helper(void *vargp) {
 		/* Get the client address */
 		const struct sockaddr_in clientaddr;
 		socklen_t clientlen = sizeof(clientaddr);
-		if (getpeername(connfd, (struct sockaddr *) &clientaddr, &clientlen) == -1)
+		if (getpeername(connfd, (struct sockaddr *) &clientaddr, &clientlen) == -1) {
 			client_error(connfd, "Internal Server Error",
 			    	500, "Internal Server Error",
 			    	"Failed on getpeername");
+			close(connfd);
+			continue;
+		}
+
 
 		char** lines = Malloc(sizeof(char*) * 100);
 		int serverfd;
@@ -184,6 +191,7 @@ proxy_helper(void *vargp) {
 			 * nor log this request 
 			 */
 			close(connfd);
+			continue;
 		}
 
 		ret_val = strlen(uri);
@@ -202,6 +210,7 @@ proxy_helper(void *vargp) {
 			    	500, "Internal Server Error",
 			    	"Failed to connect to port 80");
 			    close(connfd);
+			    continue;
 	        }
 
 	    } else {
@@ -210,6 +219,7 @@ proxy_helper(void *vargp) {
 			    	500, "Internal Server Error", 
 			    	"Failed to connect to given port");
 	        	close(connfd);
+	        	continue;
 	        }
 		}
 
@@ -227,6 +237,16 @@ proxy_helper(void *vargp) {
 	    /* Pass rest of message to server. */
 		int i;
 		for (i = 1; i < c; i ++) {
+			/* Skip the following headers. */
+			if(strstr(lines[i], "Connection") != NULL) {
+				continue;
+			}
+			if(strstr(lines[i], "Keep-Alive") != NULL) {
+				continue;
+			}
+			if(strstr(lines[i], "Proxy-Connection") != NULL) {
+				continue;
+			}
 			rio_writen(serverfd, lines[i], strlen(lines[i]));
 		}
 		rio_writen(serverfd, "\r\n", strlen("\r\n"));
@@ -241,9 +261,18 @@ proxy_helper(void *vargp) {
 	        sum += i;
 	    }
 
-	    /* Log the transaction */
+	    if (errno != 0) {
+	    	/* Had some sort of error */
+	    	client_error(connfd, "Internal Server Error",
+			    	500, "Internal Server Error",
+			    	"Errno doesn't equal 0");
+			close(connfd);
+			continue;
+	    }
+
+	    /* Log the transaction. */
 	    char* log = create_log_entry(&clientaddr, uri, sum);
-	    fprintf(fptr, "%s", log);
+	    fprintf(fptr, "%s\n", log);
 
 	    close(connfd);
 	    close(serverfd);
@@ -285,6 +314,8 @@ syntax_handler(char* head, char* tail, int connfd) {
 	return 0;
 
 }
+
+
 
 /* 
  * Requires: signal int, probably sigint
@@ -576,6 +607,14 @@ client_error(int fd, const char *cause, int err_num, const char *short_msg,
 		rio_writen(fd, body, strlen(body));
 }
 
-// Prevent "unused function" and "unused variable" warnings.
-static const void *dummy_ref[] = { client_error, create_log_entry, dummy_ref,
-    parse_uri };
+/* 
+ * Requires: a signal int
+ * 
+ * Effects: 
+ * 	Ignores the SIGPIPE signal
+ */
+void
+ignore_sigpipe(int sig) {
+	(void) sig;
+	/* We ignore sigpipe and do nothing */
+}
