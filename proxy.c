@@ -279,6 +279,8 @@ proxy_helper(void *vargp) {
 	    char* log = create_log_entry(&clientaddr, uri, sum);
 	    fprintf(fptr, "%s\n", log);
 
+	    free(lines);
+	    free(line);
 	    close(connfd);
 	    close(serverfd);
 	}
