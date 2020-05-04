@@ -111,7 +111,8 @@ main(int argc, char **argv)
 		 * descriptor to connfd.
 		 */
 
-		if((connfd = accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen)) < 0) {
+		if((connfd = accept(listenfd, (struct sockaddr *) &clientaddr,
+			clientlen)) < 0) {
       		client_error(connfd, "Gateway Timeout", 504, "Gateway Timeout", 
       			"Accept failed");
       		close(connfd);
@@ -129,11 +130,11 @@ main(int argc, char **argv)
  *   vargp is a NULL input, since we don't need anything from the main process
  * 
  * Effects:
- *   This method is passed to Pthread_create, and carries out the main proxy task.
- *	 Each thread created by main will wait until the shared buffer contains an item,
- *   remove it, parse and pass the client info to the server, and display the server
- *   response while logging the interaction. This method enables concurrent accepting
- *   and servicing of client requests.
+ *   This method is passed to Pthread_create, and carries out the main proxy
+ *	 task. Each thread created by main will wait until the shared buffer
+ *   contains an item, remove it, parse and pass the client info to the
+ * 	 server, and display the server response while logging the interaction.
+ * 	 This method enables concurrent accepting and servicing of client requests.
  */
 void*
 proxy_helper(void *vargp) {
@@ -146,7 +147,8 @@ proxy_helper(void *vargp) {
 		/* Get the client address. */
 		const struct sockaddr_in clientaddr;
 		socklen_t clientlen = sizeof(clientaddr);
-		if (getpeername(connfd, (struct sockaddr *) &clientaddr, &clientlen) == -1) {
+		if (getpeername(connfd, (struct sockaddr *) &clientaddr, &clientlen) ==
+			-1) {
 			client_error(connfd, "Internal Server Error",
 			    	500, "Internal Server Error",
 			    	"Failed on getpeername");
@@ -177,7 +179,8 @@ proxy_helper(void *vargp) {
 			/* Check if the uri is longer than MAXBUF. */
 	    	while (line[ret_val - 1] != '\n' && c == 0) {
                 ret_val = rio_readlineb(&client_riofd, line, MAXBUF);
-                lines[c] = realloc(lines[c], sizeof(char) * (strlen(lines[c]) + ret_val + 1));
+                lines[c] = realloc(lines[c], sizeof(char) * (strlen(lines[c]) +
+                	ret_val + 1));
                 lines[c] = strcat(lines[c], line);
             }
 			c++;
@@ -257,7 +260,8 @@ proxy_helper(void *vargp) {
 		/* Add close: connection if 1.1. */
 		char *version = &tail[strlen(tail) - 5];
 		if (strcmp(version, "1.1\r\n") == 0) {
-			rio_writen(serverfd, "Connection: close\r\n", strlen("Connection: close\r\n"));
+			rio_writen(serverfd, "Connection: close\r\n", strlen("Connection:
+				close\r\n"));
 		}
 		rio_writen(serverfd, "\r\n", strlen("\r\n"));
 
@@ -564,7 +568,8 @@ create_log_entry(const struct sockaddr_in *sockaddr, const char *uri, int size)
 /*
  * Requires:
  *   The parameter "fd" must be an open socket that is connected to the client.
- *   The parameters "cause", "short_msg", and "long_msg" must point to properly 
+ *   The parameters "cause", "short_msg", and "long_msg" must point to
+ * 	 properly 
  *   NUL-terminated strings that describe the reason why the HTTP transaction
  *   failed.  The string "short_msg" may not exceed 32 characters in length,
  *   and the string "long_msg" may not exceed 80 characters in length.
