@@ -15,7 +15,7 @@
 
 #include "csapp.h"
 
-#define SBUFSIZE 16 			/* How big we want the buffer */
+#define SBUFSIZE 16				/* How big we want the buffer */
 #define NUMTHREADS 4			/* How many threads we want */
 
 struct sbuf{
@@ -92,9 +92,9 @@ main(int argc, char **argv)
 
 	/* Initialize buffer and worker threads */
 	sbuf_init(&sbuf, SBUFSIZE);
-		for (int i = 0; i < NUMTHREADS; i++) {
-			Pthread_create(&tid, NULL, proxy_helper, NULL);
-		}
+	for (int i = 0; i < NUMTHREADS; i++) {
+		Pthread_create(&tid, NULL, proxy_helper, NULL);
+	}
 
 	/* 
 	 * Main function begins accepting and passing connfd
@@ -111,7 +111,7 @@ main(int argc, char **argv)
 		 * descriptor to connfd.
 		 */
 
-		if((connfd = Accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen)) < 0) {
+		if((connfd = accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen)) < 0) {
       		client_error(connfd, "Gateway Timeout", 504, "Gateway Timeout", 
       			"Accept failed");
       		close(connfd);
@@ -143,7 +143,7 @@ proxy_helper(void *vargp) {
 
 		int connfd = sbuf_remove(&sbuf);
 
-		/* Get the client address */
+		/* Get the client address. */
 		const struct sockaddr_in clientaddr;
 		socklen_t clientlen = sizeof(clientaddr);
 		if (getpeername(connfd, (struct sockaddr *) &clientaddr, &clientlen) == -1) {
@@ -154,25 +154,37 @@ proxy_helper(void *vargp) {
 			continue;
 		}
 
-
-		char** lines = Malloc(sizeof(char*) * 100);
+		int currentmax = 100;
+		char** lines = Malloc(sizeof(char*) * currentmax);
 		int serverfd;
 
-		/* Initialize the rio fd */
+		/* Initialize the rio fd. */
 		rio_t client_riofd;
 		rio_readinitb(&client_riofd, connfd);
 
-		/* Parse the client message */
+		/* Parse the client message. */
 	    int c = 0;
-	    char line[MAXBUF];
+	    char* line = malloc(sizeof(char) * MAXBUF);
 	    while (strcmp(line, "\r\n") != 0) {
+	    	/* Check if malloced space is enough. */
+	    	if (c > currentmax) {
+	    		lines = realloc(lines,sizeof(char*) * (currentmax + 100));
+	    		currentmax += 100;
+	    	}
 	    	int ret_val = rio_readlineb(&client_riofd, line, MAXBUF);
 	    	lines[c] = Malloc(sizeof(char) * (ret_val + 1));
 			strcpy(lines[c], line);
+			/* Check if the uri is longer than MAXBUF. */
+	    	while (line[ret_val - 1] != '\n' && c == 0) {
+                ret_val = rio_readlineb(&client_riofd, line, MAXBUF);
+                lines[c] = realloc(lines[c], sizeof(char) * (strlen(lines[c]) + ret_val + 1));
+                lines[c] = strcat(lines[c], line);
+            }
 			c++;
 		}
-		lines = realloc(lines, sizeof(char *) * c);
 
+		lines = realloc(lines, sizeof(char *) * c);
+		
 		/* Reformat input */
 		int ret_val = strlen(lines[0]);
 		char* head = Malloc(ret_val + 1);
@@ -184,11 +196,11 @@ proxy_helper(void *vargp) {
 		char* tail = Malloc(ret_val + 1);
 		strcpy(tail, strsep(&lines[0], " "));
 
-		/* Check malformed requests */
+		/* Check malformed requests. */
 		if (syntax_handler(head,tail,connfd) == -1) {
 			/* 
 			 * There was an error, and we don't want to continue 
-			 * nor log this request 
+			 * nor log this request.
 			 */
 			close(connfd);
 			continue;
@@ -199,33 +211,25 @@ proxy_helper(void *vargp) {
 		char* port = Malloc(ret_val + 1);
 		char* path = Malloc(ret_val + 1);
 
-		/* Pass input to parse_uri */
+		/* Pass input to parse_uri. */
 		parse_uri(uri, &host, &port, &path);
 
-		/* Opening port 80 unless specified otherwise */
+		/* Opening server connection. */
+        if((serverfd = open_clientfd(host, port)) < 0) {
+		    client_error(connfd, "Internal Server Error",
+		    	500, "Internal Server Error", 
+		    	"Failed to connect to given port");
+        	close(connfd);
+        	continue;
+        }
 
-		if(port == NULL) {
-	        if((serverfd = open_clientfd(host, "80")) < 0) {
-			    client_error(connfd, "Internal Server Error",
-			    	500, "Internal Server Error",
-			    	"Failed to connect to port 80");
-			    close(connfd);
-			    continue;
-	        }
-
-	    } else {
-	        if((serverfd = open_clientfd(host, port)) < 0) {
-			    client_error(connfd, "Internal Server Error",
-			    	500, "Internal Server Error", 
-			    	"Failed to connect to given port");
-	        	close(connfd);
-	        	continue;
-	        }
-		}
+		/* Init server response rio. */
+		rio_t server_riofd;
+		rio_readinitb(&server_riofd, serverfd);
 
 		/* Reformat message for server. */
 		head = strcat(head, " ");
-		char* new_tail = Malloc(ret_val + 1);
+		char* new_tail = Malloc(ret_val + 1 + strlen("\r\n"));
 		strcpy(new_tail, " ");
 		new_tail = strcat(new_tail, tail);
 
@@ -236,7 +240,7 @@ proxy_helper(void *vargp) {
 
 	    /* Pass rest of message to server. */
 		int i;
-		for (i = 1; i < c; i ++) {
+		for (i = 1; i < (c-1); i ++) {
 			/* Skip the following headers. */
 			if(strstr(lines[i], "Connection") != NULL) {
 				continue;
@@ -249,25 +253,26 @@ proxy_helper(void *vargp) {
 			}
 			rio_writen(serverfd, lines[i], strlen(lines[i]));
 		}
+
+		/* Add close: connection if 1.1. */
+		char *version = &tail[strlen(tail) - 5];
+		if (strcmp(version, "1.1\r\n") == 0) {
+			rio_writen(serverfd, "Connection: close\r\n", strlen("Connection: close\r\n"));
+		}
 		rio_writen(serverfd, "\r\n", strlen("\r\n"));
 
-		char* buffer[MAXLINE];
+		char buffer[MAXLINE];
 
 		/* Receive and parse reply. */
 		int sum = 0;
-	    while((i = rio_readn(serverfd, buffer, MAXLINE)) > 0 ) {
-	        rio_writen(connfd, buffer, i);
-	        bzero(buffer, MAXLINE);
+	    while((i = rio_readnb(&server_riofd, buffer, MAXLINE)) > 0 ) {
+	        if (rio_writen(connfd, buffer, i) != i) {
+	        	printf("%s\n", buffer);
+	        	client_error(connfd, "Internal Server Error",
+			    	500, "Internal Server Error", "couldn't write to client");
+	        	
+	     	    }
 	        sum += i;
-	    }
-
-	    if (errno != 0) {
-	    	/* Had some sort of error */
-	    	client_error(connfd, "Internal Server Error",
-			    	500, "Internal Server Error",
-			    	"Errno doesn't equal 0");
-			close(connfd);
-			continue;
 	    }
 
 	    /* Log the transaction. */
